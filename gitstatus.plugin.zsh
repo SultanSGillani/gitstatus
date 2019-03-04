@@ -39,11 +39,11 @@ function gitstatus_query_dir() {
   [[ -v GITSTATUS_DAEMON_PID ]]
 
   local ID=$EPOCHREALTIME
-  echo -nE "${ID}"$'\x1f'"${1-"${PWD}"}"$'\x1e' >&$_GITSTATUS_REQ
+  echo -nE "${ID}"$'\x1f'"${1-"${PWD}"}"$'\x1e' >>$_GITSTATUS_REQ
 
   while true; do
     typeset -g VCS_STATUS_ALL
-    IFS=$'\x1f' read -rd $'\x1e' -u $_GITSTATUS_RESP -t $GITSTATUS_TIMEOUT_SEC -A VCS_STATUS_ALL ||
+    IFS=$'\x1f' read -rd $'\x1e' -t $GITSTATUS_TIMEOUT_SEC -A VCS_STATUS_ALL <$_GITSTATUS_RESP ||
     {
       echo "gitstatus: timed out" >&2
       return 1
@@ -76,26 +76,26 @@ function gitstatus_init() {
     local FIFO
     FIFO=$(mktemp -u "${TMPDIR:-/tmp}"/gitstatus.$$.pipe.XXXXXXXXXX)
     mkfifo $FIFO
-    eval "exec {$1}<>${(q)FIFO}" || { rm -f $FIFO && false }
-    rm -f $FIFO
+    echo -E $FIFO
   }
 
   typeset -gH _GITSTATUS_REQ _GITSTATUS_RESP
-  make_fifo _GITSTATUS_REQ
-  make_fifo _GITSTATUS_RESP
+  _GITSTATUS_REQ=$(make_fifo)
+  _GITSTATUS_RESP=$(make_fifo)
 
   typeset -g GITSTATUS_DAEMON_LOG
   GITSTATUS_DAEMON_LOG=$(mktemp "${TMPDIR:-/tmp}"/gitstatus.$$.log.XXXXXXXXXX)
 
+  local FD
+  exec {FD}<>$_GITSTATUS_REQ
   nice -n -20 $GITSTATUS_DAEMON                                            \
     --dirty-max-index-size=$GITSTATUS_DIRTY_MAX_INDEX_SIZE --parent-pid=$$ \
-    <&$_GITSTATUS_REQ >&$_GITSTATUS_RESP 2>$GITSTATUS_DAEMON_LOG &!
-
+    <&$FD >>$_GITSTATUS_RESP 2>$GITSTATUS_DAEMON_LOG &!
   typeset -g GITSTATUS_DAEMON_PID=$!
 
   local reply
-  echo -nE $'hello\x1f\x1e' >&$_GITSTATUS_REQ
-  IFS='' read -r -d $'\x1e' -u $_GITSTATUS_RESP -t $GITSTATUS_TIMEOUT_SEC reply
+  echo -nE $'hello\x1f\x1e' >>$_GITSTATUS_REQ
+  IFS='' read -r -d $'\x1e' -t $GITSTATUS_TIMEOUT_SEC reply <$_GITSTATUS_RESP
   [[ $reply == $'hello\x1f0' ]]
 }
 
@@ -111,8 +111,7 @@ else
     kill $GITSTATUS_DAEMON_PID &>/dev/null
     unset GITSTATUS_DAEMON_PID
   fi
-  [[ -n $_GITSTATUS_REQ ]] && $_GITSTATUS_REQ>&-
-  [[ -n $_GITSTATUS_RESP ]] && $_GITSTATUS_RESP>&-
+  rm -f $_GITSTATUS_REQ $_GITSTATUS_RESP
 fi
 
 unset -f gitstatus_init
